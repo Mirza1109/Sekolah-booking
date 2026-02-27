@@ -1,0 +1,18 @@
+{
+  "name": "Sistem Booking Kemudahan Sekolah",
+  "short_name": "E-Booking Sekolah",
+  "description": "Sistem tempahan kemudahan sekolah secara online",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#667eea",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
