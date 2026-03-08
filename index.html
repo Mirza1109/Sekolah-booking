@@ -12,7 +12,7 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
     
-    <!-- Favicon & Icons -->
+    <!-- Favicon & Icons (logo hanya untuk icon, bukan dalam page) -->
     <link rel="icon" type="image/png" href="logo.png">
     <link rel="apple-touch-icon" href="logo.png">
     
@@ -543,10 +543,7 @@
 </head>
 <body>
     <div class="container">
-        <div style="display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 10px;">
-            <img src="logo.png" alt="Logo Sekolah" style="width: 60px; height: 60px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-            <h1 style="margin: 0;">🏫 Sistem Booking Kemudahan Sekolah</h1>
-        </div>
+        <h1>🏫 Sistem Booking Kemudahan Sekolah</h1>
         <p class="subtitle">Klik pada slot untuk membuat atau melihat tempahan</p>
 
         <div class="sync-status" id="syncStatus">
@@ -687,13 +684,10 @@
         // ============================================
         // FIREBASE CONFIGURATION
         // ============================================
-        // TODO: Ganti dengan Firebase config awak sendiri
-        // Dapatkan dari Firebase Console > Project Settings > Your apps
-        
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getDatabase, ref, set, get, remove, onValue, off } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getDatabase, ref, set, get, remove, query, orderByKey, startAt, endAt } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
 
-        cconst firebaseConfig = {
+        const firebaseConfig = {
 		  apiKey: "AIzaSyBXGG5m02BOkzzdeiVEgwTr0xEutho78xU",
 		  authDomain: "sistem-tempahan-3631b.firebaseapp.com",
 		  databaseURL: "https://sistem-tempahan-3631b-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -719,7 +713,7 @@
         }
 
         // ============================================
-        // APP CODE
+        // DATA & CONFIGURATION
         // ============================================
         
         const facilities = [
@@ -747,34 +741,68 @@
         let currentBooking = null;
         let currentWeekStart = getMonday(new Date());
         let dateTimeSlots = [];
+        let cachedWeeks = {}; // Cache untuk reduce reads
 
-        // Update sync status indicator
+        // ============================================
+        // OPTIMIZED FIREBASE FUNCTIONS
+        // ============================================
+
         function updateSyncStatus(connected) {
             const statusDiv = document.getElementById('syncStatus');
             const statusText = document.getElementById('statusText');
             
             if (connected) {
                 statusDiv.className = 'sync-status connected';
-                statusText.textContent = '✅ Tersambung - Data sync real-time';
+                statusText.textContent = '✅ Tersambung - Data sync optimized';
             } else {
                 statusDiv.className = 'sync-status disconnected';
-                statusText.textContent = '❌ Offline - Guna localStorage (tidak sync)';
+                statusText.textContent = '❌ Offline - Guna localStorage';
             }
         }
 
-        // Load bookings from Firebase or localStorage
-        async function loadBookings() {
+        // OPTIMIZATION 1: Fetch only data for current week instead of entire database
+        async function loadBookingsForWeek(weekStart) {
+            const weekKey = getWeekKey(weekStart);
+            
+            // Check cache first
+            if (cachedWeeks[weekKey]) {
+                bookings = cachedWeeks[weekKey];
+                renderFacilities();
+                return;
+            }
+
             if (isFirebaseConnected) {
-                const bookingsRef = ref(database, 'bookings');
-                
-                // Listen for real-time updates
-                onValue(bookingsRef, (snapshot) => {
+                try {
+                    const weekDates = getWeekDates(weekStart);
+                    const startDate = getDateString(weekDates[0]);
+                    const endDate = getDateString(weekDates[6]);
+                    
+                    // Fetch only bookings within current week date range
+                    const bookingsRef = ref(database, 'bookings');
+                    const weekQuery = query(
+                        bookingsRef,
+                        orderByKey(),
+                        startAt(startDate.split('-').join('')),
+                        endAt(endDate.split('-').join('') + '~')
+                    );
+                    
+                    const snapshot = await get(weekQuery);
                     const data = snapshot.val();
                     bookings = data || {};
+                    
+                    // Cache this week's data
+                    cachedWeeks[weekKey] = bookings;
+                    
                     renderFacilities();
-                }, (error) => {
-                    console.error('Firebase read error:', error);
-                });
+                } catch (error) {
+                    console.error('Error loading bookings:', error);
+                    // Fallback to localStorage
+                    const saved = localStorage.getItem('schoolBookings');
+                    if (saved) {
+                        bookings = JSON.parse(saved);
+                    }
+                    renderFacilities();
+                }
             } else {
                 // Fallback to localStorage
                 const saved = localStorage.getItem('schoolBookings');
@@ -785,14 +813,21 @@
             }
         }
 
-        // Save booking to Firebase or localStorage
+        // OPTIMIZATION 2: Save individual booking instead of entire object
         async function saveBooking(key, bookingData) {
             if (isFirebaseConnected) {
                 try {
                     await set(ref(database, `bookings/${key}`), bookingData);
+                    
+                    // Update cache
+                    bookings[key] = bookingData;
+                    const weekKey = getWeekKey(currentWeekStart);
+                    if (cachedWeeks[weekKey]) {
+                        cachedWeeks[weekKey][key] = bookingData;
+                    }
                 } catch (error) {
                     console.error('Error saving to Firebase:', error);
-                    alert('❌ Gagal save ke Firebase. Cuba lagi.');
+                    throw error;
                 }
             } else {
                 // Fallback to localStorage
@@ -801,16 +836,20 @@
             }
         }
 
-        // Delete booking from Firebase or localStorage
+        // OPTIMIZATION 3: Delete individual booking
         async function deleteBooking(key) {
             if (isFirebaseConnected) {
                 try {
-                    console.log('Deleting from Firebase, key:', key);
                     await remove(ref(database, `bookings/${key}`));
-                    console.log('Successfully deleted from Firebase');
+                    
+                    // Update cache
+                    delete bookings[key];
+                    const weekKey = getWeekKey(currentWeekStart);
+                    if (cachedWeeks[weekKey]) {
+                        delete cachedWeeks[weekKey][key];
+                    }
                 } catch (error) {
                     console.error('Error deleting from Firebase:', error);
-                    alert('❌ Gagal padam dari Firebase. Cuba lagi.');
                     throw error;
                 }
             } else {
@@ -819,6 +858,24 @@
                 localStorage.setItem('schoolBookings', JSON.stringify(bookings));
             }
         }
+
+        // Helper: Get week cache key
+        function getWeekKey(date) {
+            return `${date.getFullYear()}-W${getWeekNumber(date)}`;
+        }
+
+        // Helper: Get week number
+        function getWeekNumber(date) {
+            const d = new Date(date);
+            d.setHours(0, 0, 0, 0);
+            d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+            const yearStart = new Date(d.getFullYear(), 0, 1);
+            return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+        }
+
+        // ============================================
+        // UI FUNCTIONS
+        // ============================================
 
         function getMonday(date) {
             const d = new Date(date);
@@ -839,11 +896,11 @@
             return d.toISOString().split('T')[0];
         }
 
-        function getWeekDates() {
+        function getWeekDates(weekStart = currentWeekStart) {
             const dates = [];
             for (let i = 0; i < 7; i++) {
-                const date = new Date(currentWeekStart);
-                date.setDate(currentWeekStart.getDate() + i);
+                const date = new Date(weekStart);
+                date.setDate(weekStart.getDate() + i);
                 dates.push(date);
             }
             return dates;
@@ -860,13 +917,13 @@
         function previousWeek() {
             currentWeekStart.setDate(currentWeekStart.getDate() - 7);
             updateWeekDisplay();
-            renderFacilities();
+            loadBookingsForWeek(currentWeekStart);
         }
 
         function nextWeek() {
             currentWeekStart.setDate(currentWeekStart.getDate() + 7);
             updateWeekDisplay();
-            renderFacilities();
+            loadBookingsForWeek(currentWeekStart);
         }
 
         function renderFacilities() {
@@ -964,7 +1021,6 @@
                 formSection.style.display = 'block';
                 deleteSection.style.display = 'none';
                 
-                // Clear ALL form fields
                 document.getElementById('teacherName').value = '';
                 document.getElementById('bookingFacility').value = facility;
                 document.getElementById('bookingFacility').disabled = true;
@@ -973,15 +1029,7 @@
                 document.getElementById('newEndTime').value = '';
                 document.getElementById('newPurpose').value = '';
                 
-                // Clear dateTimeSlots completely
                 dateTimeSlots = [];
-                
-                // Set fresh slot from clicked time/date
-                const clickedIndex = timeSlots.findIndex(slot => slot === time);
-                if (clickedIndex !== -1) {
-                    dateTimeSlots = [{ date, startIndex: clickedIndex, endIndex: clickedIndex + 1, purpose: '' }];
-                }
-                
                 updateDateTimeSlotDisplay();
                 populateNewSlotTimeDropdowns();
             }
@@ -1090,7 +1138,6 @@
         function updateDateTimeSlotDisplay() {
             const container = document.getElementById('dateTimeSlots');
             
-            // Filter out slots with empty purpose (placeholders from clicking slots)
             const validSlots = dateTimeSlots.filter(slot => slot.purpose && slot.purpose.trim());
             
             if (validSlots.length === 0) {
@@ -1124,7 +1171,6 @@
                 removeBtn.className = 'remove-slot-btn';
                 removeBtn.textContent = '✕';
                 removeBtn.title = 'Buang';
-                // Find the actual index in dateTimeSlots array
                 const actualIndex = dateTimeSlots.findIndex(s => s === slot);
                 removeBtn.addEventListener('click', () => removeDateTimeSlot(actualIndex));
                 
@@ -1155,16 +1201,32 @@
             let totalConflicts = 0;
             let totalAvailable = 0;
             
-            dateTimeSlots.forEach(slot => {
+            // OPTIMIZATION 4: Check conflicts only for relevant slots
+            for (const slot of dateTimeSlots) {
                 for (let i = slot.startIndex; i < slot.endIndex; i++) {
                     const key = `${facility}-${slot.date}-${timeSlots[i]}`.replace(/\//g, '-');
-                    if (bookings[key]) {
+                    
+                    // If not in current bookings cache, fetch from Firebase
+                    if (!bookings.hasOwnProperty(key) && isFirebaseConnected) {
+                        try {
+                            const snapshot = await get(ref(database, `bookings/${key}`));
+                            if (snapshot.exists()) {
+                                bookings[key] = snapshot.val();
+                                totalConflicts++;
+                            } else {
+                                totalAvailable++;
+                            }
+                        } catch (error) {
+                            console.error('Error checking conflict:', error);
+                            totalAvailable++;
+                        }
+                    } else if (bookings[key]) {
                         totalConflicts++;
                     } else {
                         totalAvailable++;
                     }
                 }
-            });
+            }
             
             if (totalConflicts > 0) {
                 if (!confirm(`⚠️ Ada ${totalConflicts} slot sudah ditempah.\n✅ ${totalAvailable} slot masih kosong.\n\nTeruskan booking untuk slot yang kosong?`)) {
@@ -1173,18 +1235,27 @@
             }
             
             let bookedCount = 0;
-            for (const slot of dateTimeSlots) {
-                for (let i = slot.startIndex; i < slot.endIndex; i++) {
-                    const key = `${facility}-${slot.date}-${timeSlots[i]}`.replace(/\//g, '-');
-                    if (!bookings[key]) {
-                        await saveBooking(key, { teacher, purpose: slot.purpose });
-                        bookedCount++;
+            try {
+                for (const slot of dateTimeSlots) {
+                    for (let i = slot.startIndex; i < slot.endIndex; i++) {
+                        const key = `${facility}-${slot.date}-${timeSlots[i]}`.replace(/\//g, '-');
+                        if (!bookings[key]) {
+                            await saveBooking(key, { teacher, purpose: slot.purpose });
+                            bookedCount++;
+                        }
                     }
                 }
+                
+                alert(`✅ Berjaya! ${bookedCount} slot telah ditempah!`);
+                closeModal();
+                
+                // Clear cache for affected weeks to force refresh
+                cachedWeeks = {};
+                loadBookingsForWeek(currentWeekStart);
+            } catch (error) {
+                console.error('Booking error:', error);
+                alert('❌ Ada masalah semasa booking. Cuba lagi.');
             }
-            
-            alert(`✅ Berjaya! ${bookedCount} slot telah ditempah!`);
-            closeModal();
         }
 
         async function handleDelete() {
@@ -1195,38 +1266,22 @@
             }
             
             const key = `${currentBooking.facility}-${currentBooking.date}-${currentBooking.time}`.replace(/\//g, '-');
-            console.log('Current booking key:', key);
-            console.log('Current bookings object:', bookings);
-            
             const bookingToDelete = bookings[key];
             
             if (!bookingToDelete) {
                 alert('❌ Booking tidak dijumpai.');
-                console.log('Booking not found for key:', key);
                 closeModal();
                 return;
             }
             
-            console.log('Booking to delete:', bookingToDelete);
-            
             const relatedSlots = [];
             Object.keys(bookings).forEach(k => {
                 const booking = bookings[k];
-                
-                // Parse key properly: last part is time (has :), 3rd last is date (YYYY-MM-DD format)
-                // Example: "Makmal Komputer-2026-02-26-10:00-10:30"
                 const parts = k.split('-');
                 
-                // Time is last 2 parts (contains :)
-                const timePart = parts.slice(-2).join('-'); // "10:00-10:30"
-                
-                // Date is 3 parts before time (YYYY-MM-DD)
-                const datePart = parts.slice(-5, -2).join('-'); // "2026-02-26"
-                
-                // Facility is everything before date
-                const facilityPart = parts.slice(0, -5).join('-'); // "Makmal Komputer"
-                
-                console.log('Checking key:', k, '| Facility:', facilityPart, '| Date:', datePart, '| Time:', timePart);
+                const timePart = parts.slice(-2).join('-');
+                const datePart = parts.slice(-5, -2).join('-');
+                const facilityPart = parts.slice(0, -5).join('-');
                 
                 if (booking.teacher === bookingToDelete.teacher &&
                     facilityPart === currentBooking.facility &&
@@ -1236,11 +1291,8 @@
                 }
             });
             
-            console.log('Related slots to delete:', relatedSlots);
-            
             if (relatedSlots.length === 0) {
-                alert('❌ Tiada related slots dijumpai. Mungkin ada masalah dengan key format.');
-                console.error('No related slots found. Check key parsing logic.');
+                alert('❌ Tiada related slots dijumpai.');
                 closeModal();
                 return;
             }
@@ -1258,20 +1310,21 @@
                 return;
             }
             
-            // Delete all related slots from Firebase
-            console.log('Starting delete process...');
             try {
                 for (const slotKey of relatedSlots) {
                     await deleteBooking(slotKey);
                 }
-                console.log('All slots deleted successfully');
+                
                 alert(`✅ Berjaya! ${slotCount} slot telah dipadam!`);
+                closeModal();
+                
+                // Clear cache to force refresh
+                cachedWeeks = {};
+                loadBookingsForWeek(currentWeekStart);
             } catch (error) {
                 console.error('Delete process failed:', error);
-                alert('❌ Ada masalah semasa delete. Check console untuk details.');
+                alert('❌ Ada masalah semasa delete. Cuba lagi.');
             }
-            
-            closeModal();
         }
 
         // Event listeners
@@ -1311,7 +1364,7 @@
 
         // Initialize
         updateWeekDisplay();
-        loadBookings();
+        loadBookingsForWeek(currentWeekStart);
         populateNewSlotTimeDropdowns();
     </script>
 </body>
